@@ -66,6 +66,8 @@ pub struct Piece {
     /// This "wraps" the original piece.
     /// This one isn't replicated like above.
     pub neighbor_mask: [u32; 8],
+
+    pub as_u16: u16,
 }
 
 impl Piece {
@@ -131,6 +133,9 @@ impl Piece {
         //     }
         // }
 
+        let as_u16 = piece[0] | (piece[1] << 4) | (piece[2] << 8) | (piece[3] << 12);
+        let as_u16 = as_u16 as u16;
+
         unsafe {
             Self {
                 id_mask,
@@ -140,6 +145,7 @@ impl Piece {
                 corner_mask,
                 // repeated_mask: ymm(repeated_piece),
                 neighbor_mask,
+                as_u16,
             }
         }
     }

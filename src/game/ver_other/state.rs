@@ -107,6 +107,8 @@ impl From<Move> for (PieceTransformID, (i8, i8)) {
     }
 }
 
+pub struct Subsquares;
+
 /// The game state.
 pub struct State {
     board: Mask,
@@ -138,6 +140,10 @@ impl State {
             corners,
             player_pieces,
         }
+    }
+
+    pub fn gen_subsquares(&self) -> Subsquares {
+        Subsquares {}
     }
 
     fn get_moves_for_piece<'a>(
@@ -190,7 +196,7 @@ impl State {
     }
 
     /// Get the possible moves for a player
-    pub fn get_moves<'a>(&'a self, player: &'a Player) -> Vec<Move> {
+    pub fn get_moves<'a>(&'a self, _subsquares: &Subsquares, player: &'a Player) -> Vec<Move> {
         let mut pieces: [bool; 400 * 21 * 8] = [false; 400 * 21 * 8];
         // All the different piece transforms for the player
         self.player_pieces[usize::from(player)]

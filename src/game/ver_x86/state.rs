@@ -189,6 +189,60 @@ pub struct State {
     player_pieces: [u128; Player::N],
 }
 
+#[derive(Copy, Clone)]
+pub struct Subsquares {
+    /// Entry at index x contains a 4x4 mask, corresponding to a move at (x // 20, x % 20).
+    occupied_or_color: [u16; 400],
+    valid_corners: [u16; 400],
+}
+
+impl Subsquares {
+    pub fn test_piece(&self, moves: &mut Vec<Move>, piece_id: usize, piece: u16) {
+        unsafe {
+            let piece = _mm256_set1_epi16(piece as i16);
+            let zero = _mm256_setzero_si256();
+
+            for i in 0..25 {
+                let occupied_or_color = _mm256_loadu_si256(
+                    std::ptr::addr_of!(self.occupied_or_color[i * 16]) as *const __m256i);
+                let valid_corners = _mm256_loadu_si256(
+                    std::ptr::addr_of!(self.valid_corners[i * 16]) as *const __m256i);
+                let ok1 = _mm256_movemask_epi8(
+                    _mm256_cmpeq_epi16(
+                        _mm256_and_si256(piece, occupied_or_color),
+                        zero)) as u32;
+                let not_ok2 = _mm256_movemask_epi8(
+                    _mm256_cmpeq_epi16(
+                        _mm256_and_si256(piece, valid_corners),
+                        zero)) as u32;
+
+                let mut ok = (ok1 & !not_ok2) as u32;  // pairs of 2 bits in here
+                let mut move_index = i * 16;
+
+                while ok != 0 {
+                    let skip = ok.trailing_zeros();
+
+                    move_index += (skip >> 1) as usize;
+                    ok >>= skip;
+                    ok >>= 2;
+
+                    moves.push(Move::new(piece_id, ((move_index % 20) as i8, (move_index / 20) as i8)));
+                    move_index += 1;
+                }
+            }
+        }
+    }
+}
+
+impl Default for Subsquares {
+    fn default() -> Self {
+        Subsquares {
+            occupied_or_color: [0u16; 400],
+            valid_corners: [0u16; 400],
+        }
+    }
+}
+
 impl State {
     pub fn new(w: usize, h: usize) -> Self {
         debug_assert!(w == 20 && h == 20);
@@ -247,6 +301,35 @@ impl State {
             player_pieces: [(1 << PIECE_COUNT) - 1; Player::N], // Players start with all the pieces
         }
     }
+
+    /// Generate a bunch of masks for each 4x4 sub-square
+    pub fn gen_subsquares(&self) -> [Subsquares; Player::N] {
+        fn get_bits(val: u32, x: u32) -> u16 {
+            (((val | !((1u32 << 20) - 1)) >> x) & 0xf) as u16
+        }
+
+        fn fill(data: &[u32; 20], result: &mut [u16; 400]) {
+            for y in 0..20usize {
+                for x in 0..20u32 {
+                    result[y * 20 + x as usize] |= get_bits(data[y], x)
+                        | (get_bits(*data.get(y+1).unwrap_or(&u32::MAX), x) << 4)
+                        | (get_bits(*data.get(y+2).unwrap_or(&u32::MAX), x) << 8)
+                        | (get_bits(*data.get(y+3).unwrap_or(&u32::MAX), x) << 12);
+                }
+            }
+        }
+
+        let mut result = [Subsquares::default(); Player::N];
+
+        for i in 0..4 {
+            fill(&self.occupied_mask, &mut result[i].occupied_or_color);
+            fill(&self.color_masks[i], &mut result[i].occupied_or_color);
+            fill(&self.corner_masks[i], &mut result[i].valid_corners);
+        }
+
+        result
+    }
+
 
     /// Get a checker for rows [offset+2, offset+4].
     /// If we have a "piece" stored with the same format in an __m256i, then
@@ -359,14 +442,29 @@ impl State {
     }
 
     /// Get the possible moves for a player
-    pub fn get_moves<'a>(&'a self, player: &'a Player) -> Vec<Move> {
+    pub fn get_moves<'a>(&'a self, subsquares: &[Subsquares; 4], player: &'a Player) -> Vec<Move> {
         let mut moves = Vec::with_capacity(1000);
         let pieces = &*PIECES;
         // All the different piece transforms for the player
         for piece in (0..PIECE_COUNT)
             .filter(move |f| (1 << *f) & self.player_pieces[usize::from(player)] != 0)
         {
-            self.get_moves_for_piece(&mut moves, pieces, player, piece);
+            // Only works for pieces that fit in a 4x4
+            if pieces[piece].height <= 4 && pieces[piece].width <= 4 {
+
+/*
+                // CORRECTNESS TEST:
+                let mut a1 = vec![];
+                let mut a2 = vec![];
+
+                subsquares[usize::from(player)].test_piece(&mut a2, piece, pieces[piece].as_u16);
+                self.get_moves_for_piece(&mut a1, pieces, player, piece);
+
+                a1.sort();
+                a2.sort();
+*/
+                subsquares[usize::from(player)].test_piece(&mut moves, piece, pieces[piece].as_u16);
+            }
         }
         moves
     }

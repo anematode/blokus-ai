@@ -18,10 +18,11 @@ fn main() {
         loop {
             let mut played = false;
             for player in Player::iter() {
+                let subsquares = game.gen_subsquares();
                 turns += 1;
 
                 let now = Instant::now();
-                let moves = game.get_moves(&player);
+                let moves = game.get_moves(&subsquares, &player);
                 let moves: Vec<_> = moves;
                 let elapsed = now.elapsed();
                 avg_move_t += elapsed.as_nanos();
