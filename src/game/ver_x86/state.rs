@@ -160,14 +160,15 @@ pub static PIECES: Lazy<[Piece; PIECE_COUNT]> = Lazy::new(|| {
 
 /// A move.
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+#[repr(C)]
 pub struct Move {
-    pub piece: usize,
+    pub piece: u16,
     pub pos: (i8, i8),
 }
 
 impl Move {
     pub fn new(piece: usize, pos: (i8, i8)) -> Self {
-        Self { piece, pos }
+        Self { piece: piece as u16, pos }
     }
 }
 
@@ -197,7 +198,7 @@ pub struct Subsquares {
 }
 
 impl Subsquares {
-    pub fn test_piece(&self, moves: &mut Vec<Move>, piece_id: usize, piece: u16) {
+    pub fn test_piece_avx2(&self, moves: &mut Vec<Move>, piece_id: usize, piece: u16) {
         unsafe {
             let piece = _mm256_set1_epi16(piece as i16);
             let zero = _mm256_setzero_si256();
@@ -230,6 +231,63 @@ impl Subsquares {
                     move_index += 1;
                 }
             }
+        }
+    }
+
+    pub fn test_piece_avx512(&self, moves: &mut Vec<Move>, piece_id: usize, piece: u16) {
+        static MOVES_BY_INDEX: OnceLock<&'static [Move; 400]> = OnceLock::new();
+        let moves_by_index = MOVES_BY_INDEX.get_or_init(#[cold] || {
+            let mut result = [Move::new(0, 0, 0); 400];
+            for i in 0..400 {
+                result[i].pos = (i % 20, i / 20);
+            }
+            result
+        });
+
+        moves.reserve(400);
+
+        unsafe {
+            let mut move_count = 0usize;
+            let piece = _mm512_set1_epi16(piece as i16);
+            let mut load_elements_mask = u32::MAX;
+
+            for i in 0..13 {
+                let occupied_or_color = _mm512_maskz_loadu_epi16(load_elements_mask,
+                    std::ptr::addr_of!(self.occupied_or_color[i * 32]) as *const i16);
+                let valid_corners = _mm512_maskz_loadu_epi16(load_elements_mask,
+                    std::ptr::addr_of!(self.valid_corners[i * 32]) as *const i16);
+
+                // true when no intersections with occupied/color
+                let ok = _mm512_testn_epi16_mask(piece, occupied_or_color);
+                // true when some intersection with valid corners, merked with before
+                let mut ok = _mm512_mask_test_epi16_mask(ok, piece, valid_corners) as u32;
+
+                let mut move_index = i * 32;
+
+                while ok != 0 {
+                    let skip = ok.trailing_zeros();
+
+                    move_index += (skip >> 1) as usize;
+                    ok >>= skip;
+                    ok >>= 2;
+
+                    moves.push(Move::new(piece_id, ((move_index % 20) as i8, (move_index / 20) as i8)));
+                    move_index += 1;
+                }
+
+                if i == 11 {
+                    load_elements_mask = (u16::MAX as u32);   // prevent out-of-bounds read for the last few
+                }
+            }
+        }
+    }
+
+    /// Given a piece ID and the piece packed into a 4x4 square, dump all moves to the vector.
+    pub fn test_piece(&self, moves: &mut Vec<Move>, piece_id: usize, piece: u16) {
+        if !is_x86_feature_detected!("avx512bw") {
+            self.test_piece_avx512(moves, piece_id, piece)
+        } else {
+            self.test_piece_avx2(moves, piece_id, piece)
         }
     }
 }
@@ -478,7 +536,7 @@ impl State {
     }
 
     pub fn place_piece(&mut self, player: &Player, mv: &Move) {
-        let piece = &PIECES[mv.piece];
+        let piece = &PIECES[mv.piece as usize];
         let (x, y) = mv.pos;
         // println!("Placing {} at {:?}", mv.piece, mv.pos);
 
@@ -565,7 +623,7 @@ impl State {
             }
         }
 
-        self.player_pieces[pid] &= !PIECES[mv.piece].id_mask;
+        self.player_pieces[pid] &= !PIECES[mv.piece as usize].id_mask;
     }
 }
 
