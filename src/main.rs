@@ -32,8 +32,8 @@ fn main() {
         loop {
             let mut played = false;
             for player in Player::iter() {
-                let subsquares = game.gen_subsquares();
                 let now = Instant::now();
+                let subsquares = game.gen_subsquares();
                 let moves = game.get_moves(&subsquares, &player);
                 let moves: Vec<_> = moves;
                 let move_elapsed = now.elapsed();
